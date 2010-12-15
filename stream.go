@@ -93,47 +93,66 @@ func (ts *TwitterStream) Close() {
 
 var responseLineRegexp = regexp.MustCompile("^HTTP/[0-9.]+ ([0-9]+) ")
 
+func (ts *TwitterStream) error(msg string, err os.Error) {
+	log.Println("twitterstream:", msg, err)
+	ts.Close()
+}
+
+type WR struct {
+	c net.Conn
+}
+
+func (wr WR) Read(p []byte) (int, os.Error) {
+	n, err := wr.c.Read(p)
+	log.Println("WR", n, err)
+	return n, err
+}
+
 func (ts *TwitterStream) connect() {
+	log.Println("twitterstream: connecting to", ts.addr)
+
 	var err os.Error
 	ts.conn, err = net.Dial("tcp", "", ts.addr)
 	if err != nil {
-		log.Println("twitterstream: dial failed ", err)
-		ts.Close()
+		ts.error("dial failed ", err)
+		return
+	}
+
+	// Set timeout to detect dead connection. Twitter sends at least one line
+	// to the response every 30 seconds.
+	err = ts.conn.SetReadTimeout(60e9)
+	if err != nil {
+		ts.error("set read timeout failed", err)
 		return
 	}
 
 	if _, err := ts.conn.Write(ts.req); err != nil {
-		log.Println("twitterstream: error writing request: ", err)
-		ts.Close()
+		ts.error("error writing request: ", err)
 		return
 	}
 
-	ts.r, _ = bufio.NewReaderSize(ts.conn, 8192)
+	ts.r, _ = bufio.NewReaderSize(WR{ts.conn}, 8192)
 	p, err := ts.r.ReadSlice('\n')
 	if err != nil {
-		log.Println("twittersteam: error reading response: ", err)
-		ts.Close()
+		ts.error("error reading response: ", err)
 		return
 	}
 
 	m := responseLineRegexp.FindSubmatch(p)
 	if m == nil {
-		log.Println("twitterstream: bad response line")
-		ts.Close()
+		ts.error("bad response line", nil)
 		return
 	}
 
 	if string(m[1]) != "200" {
-		log.Println("twiterstream: bad response code: ", string(m[1]))
-		ts.Close()
+		ts.error("bad response code: "+string(m[1]), nil)
 		return
 	}
 
 	for {
 		p, err = ts.r.ReadSlice('\n')
 		if err != nil {
-			log.Println("twittersteam: error reading header: ", err)
-			ts.Close()
+			ts.error("error reading header: ", err)
 			return
 		}
 		if len(p) <= 2 {
@@ -141,7 +160,7 @@ func (ts *TwitterStream) connect() {
 		}
 	}
 
-	log.Println("twitterstream: connected to ", ts.addr)
+	log.Println("twitterstream: connected to", ts.addr)
 }
 
 // Next returns the next entity from the stream. 
@@ -159,10 +178,15 @@ func (ts *TwitterStream) Next(v interface{}) os.Error {
 		}
 		var err os.Error
 		p, err = ts.r.ReadSlice('\n')
-		if err == nil {
+		if err != nil {
+			ts.Close()
+			continue
+		} else if len(p) <= 2 {
+			// ignore keepalive line
+			continue
+		} else {
 			break
 		}
-		ts.Close()
 	}
-	return json.Unmarshal(p, v)
+    return json.Unmarshal(p, v)
 }
