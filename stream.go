@@ -131,7 +131,7 @@ func (ts *TwitterStream) connect() {
 		return
 	}
 
-	ts.r, _ = bufio.NewReaderSize(WR{ts.conn}, 8192)
+	ts.r, _ = bufio.NewReaderSize(ts.conn, 8192)
 	p, err := ts.r.ReadSlice('\n')
 	if err != nil {
 		ts.error("error reading response: ", err)
