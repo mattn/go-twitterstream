@@ -21,6 +21,7 @@ import (
 	"bufio"
 	"bytes"
 	"github.com/garyburd/twister/web"
+	"github.com/garyburd/twister/oauth"
 	"http"
 	"json"
 	"log"
@@ -30,57 +31,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"encoding/base64"
 )
-
-// BasicAuthHeader returns user and pwd encoded as an HTTP basic auth header.
-func BasicAuthHeader(user, pwd string) string {
-	s := user + ":" + pwd
-	p := make([]byte, base64.StdEncoding.EncodedLen(len(s)))
-	base64.StdEncoding.Encode(p, []byte(s))
-	return "Basic " + string(p)
-}
 
 // TwitterStream manages the connection to Twitter. The stream automatically
 // reconnects to Twitter if there is an error with the connection.
 type TwitterStream struct {
-	conn net.Conn
-	r    *bufio.Reader
-	req  []byte
-	addr string
+	conn        net.Conn
+	r           *bufio.Reader
+	url         string
+	param       web.StringsMap
+	oauthClient *oauth.Client
+	accessToken *oauth.Credentials
 }
 
-// New returns a new TwitterStream. The caller is responsible for providing
-// authentication information in header or param.
-func New(urlString string, header web.StringsMap, param web.StringsMap) *TwitterStream {
-	url, err := http.ParseURL(urlString)
-	if err != nil {
-		panic("bad url: " + urlString)
-	}
-
-	addr := url.Host
-	if strings.LastIndex(addr, ":") <= strings.LastIndex(addr, "]") {
-		addr = addr + ":80"
-	}
-
-	body := param.FormEncodedBytes()
-
-	header.Set(web.HeaderHost, url.Host)
-	header.Set(web.HeaderConnection, "close") // disable chunk encoding in response
-	header.Set(web.HeaderContentLength, strconv.Itoa(len(body)))
-	header.Set(web.HeaderContentType, "application/x-www-form-urlencoded")
-
-	var b bytes.Buffer
-	b.WriteString("POST ")
-	b.WriteString(url.RawPath)
-	b.WriteString(" HTTP/1.1\r\n")
-	header.WriteHttpHeader(&b)
-	b.Write(body)
-
-	ts := &TwitterStream{addr: addr, req: b.Bytes()}
+// New returns a new TwitterStream. 
+func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, url string, param web.StringsMap) *TwitterStream {
+	ts := &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, url: url, param: param}
 	ts.connect()
 	return ts
 }
+
 
 // Close releases all resources used by the stream.
 func (ts *TwitterStream) Close() {
@@ -98,21 +68,42 @@ func (ts *TwitterStream) error(msg string, err os.Error) {
 	ts.Close()
 }
 
-type WR struct {
-	c net.Conn
-}
-
-func (wr WR) Read(p []byte) (int, os.Error) {
-	n, err := wr.c.Read(p)
-	log.Println("WR", n, err)
-	return n, err
-}
-
 func (ts *TwitterStream) connect() {
-	log.Println("twitterstream: connecting to", ts.addr)
-
 	var err os.Error
-	ts.conn, err = net.Dial("tcp", "", ts.addr)
+	log.Println("twitterstream: connecting to", ts.url)
+
+	url, err := http.ParseURL(ts.url)
+	if err != nil {
+		panic("bad url: " + ts.url)
+	}
+
+	addr := url.Host
+	if strings.LastIndex(addr, ":") <= strings.LastIndex(addr, "]") {
+		addr = addr + ":80"
+	}
+
+	param := web.StringsMap{}
+	for key, values := range ts.param {
+		param[key] = values
+	}
+	ts.oauthClient.SignParam(ts.accessToken, "POST", ts.url, param)
+
+	body := param.FormEncodedBytes()
+
+	header := web.NewStringsMap(
+		web.HeaderHost, url.Host,
+		web.HeaderConnection, "close", // disable chunk encoding in response
+		web.HeaderContentLength, strconv.Itoa(len(body)),
+		web.HeaderContentType, "application/x-www-form-urlencoded")
+
+	var request bytes.Buffer
+	request.WriteString("POST ")
+	request.WriteString(url.RawPath)
+	request.WriteString(" HTTP/1.1\r\n")
+	header.WriteHttpHeader(&request)
+	request.Write(body)
+
+	ts.conn, err = net.Dial("tcp", "", addr)
 	if err != nil {
 		ts.error("dial failed ", err)
 		return
@@ -126,7 +117,7 @@ func (ts *TwitterStream) connect() {
 		return
 	}
 
-	if _, err := ts.conn.Write(ts.req); err != nil {
+	if _, err := ts.conn.Write(request.Bytes()); err != nil {
 		ts.error("error writing request: ", err)
 		return
 	}
@@ -160,7 +151,7 @@ func (ts *TwitterStream) connect() {
 		}
 	}
 
-	log.Println("twitterstream: connected to", ts.addr)
+	log.Println("twitterstream: connected to", ts.url)
 }
 
 // Next returns the next entity from the stream. 
@@ -188,5 +179,5 @@ func (ts *TwitterStream) Next(v interface{}) os.Error {
 			break
 		}
 	}
-    return json.Unmarshal(p, v)
+	return json.Unmarshal(p, v)
 }
