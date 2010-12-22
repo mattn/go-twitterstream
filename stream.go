@@ -20,9 +20,10 @@ package twitterstream
 import (
 	"bufio"
 	"bytes"
-	"github.com/garyburd/twister/web"
 	"github.com/garyburd/twister/oauth"
+	"github.com/garyburd/twister/web"
 	"http"
+	"io/ioutil"
 	"json"
 	"log"
 	"net"
@@ -135,11 +136,6 @@ func (ts *TwitterStream) connect() {
 		return
 	}
 
-	if string(m[1]) != "200" {
-		ts.error("bad response code: "+string(m[1]), nil)
-		return
-	}
-
 	for {
 		p, err = ts.r.ReadSlice('\n')
 		if err != nil {
@@ -149,6 +145,13 @@ func (ts *TwitterStream) connect() {
 		if len(p) <= 2 {
 			break
 		}
+	}
+
+	if string(m[1]) != "200" {
+		p, _ := ioutil.ReadAll(ts.r)
+		log.Println(string(p))
+		ts.error("bad response code: "+string(m[1]), nil)
+		return
 	}
 
 	log.Println("twitterstream: connected to", ts.url)
@@ -170,7 +173,7 @@ func (ts *TwitterStream) Next(v interface{}) os.Error {
 		var err os.Error
 		p, err = ts.r.ReadSlice('\n')
 		if err != nil {
-			ts.Close()
+			ts.error("error reading line", err)
 			continue
 		} else if len(p) <= 2 {
 			// ignore keepalive line
