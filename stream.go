@@ -37,6 +37,7 @@ import (
 // TwitterStream manages the connection to Twitter. The stream automatically
 // reconnects to Twitter if there is an error with the connection.
 type TwitterStream struct {
+	waitUntil   int64
 	conn        net.Conn
 	r           *bufio.Reader
 	url         string
@@ -47,9 +48,7 @@ type TwitterStream struct {
 
 // New returns a new TwitterStream. 
 func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, url string, param web.StringsMap) *TwitterStream {
-	ts := &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, url: url, param: param}
-	ts.connect()
-	return ts
+	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, url: url, param: param}
 }
 
 
@@ -161,14 +160,13 @@ func (ts *TwitterStream) connect() {
 func (ts *TwitterStream) Next(v interface{}) os.Error {
 	var p []byte
 	for {
-		timeout := int64(1e9)
 		for ts.r == nil {
-			time.Sleep(timeout)
-			ts.connect()
-			timeout = timeout * 2
-			if timeout > 60e9 {
-				timeout = 60e9
+			d := ts.waitUntil - time.Nanoseconds()
+			if d > 0 {
+				time.Sleep(d)
 			}
+			ts.waitUntil = time.Nanoseconds() + 30e9
+			ts.connect()
 		}
 		var err os.Error
 		p, err = ts.r.ReadSlice('\n')
