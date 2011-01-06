@@ -20,11 +20,11 @@ package twitterstream
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"github.com/garyburd/twister/oauth"
 	"github.com/garyburd/twister/web"
 	"http"
 	"io/ioutil"
-	"json"
 	"log"
 	"net"
 	"os"
@@ -50,7 +50,6 @@ type TwitterStream struct {
 func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, url string, param web.StringsMap) *TwitterStream {
 	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, url: url, param: param}
 }
-
 
 // Close releases all resources used by the stream.
 func (ts *TwitterStream) Close() {
@@ -79,7 +78,11 @@ func (ts *TwitterStream) connect() {
 
 	addr := url.Host
 	if strings.LastIndex(addr, ":") <= strings.LastIndex(addr, "]") {
-		addr = addr + ":80"
+		if url.Scheme == "http" {
+			addr = addr + ":80"
+		} else {
+			addr = addr + ":443"
+		}
 	}
 
 	param := web.StringsMap{}
@@ -103,10 +106,22 @@ func (ts *TwitterStream) connect() {
 	header.WriteHttpHeader(&request)
 	request.Write(body)
 
-	ts.conn, err = net.Dial("tcp", "", addr)
-	if err != nil {
-		ts.error("dial failed ", err)
-		return
+	if url.Scheme == "http" {
+		ts.conn, err = net.Dial("tcp", "", addr)
+		if err != nil {
+			ts.error("dial failed ", err)
+			return
+		}
+	} else {
+		ts.conn, err = tls.Dial("tcp", "", addr, nil)
+		if err != nil {
+			ts.error("dial failed ", err)
+			return
+		}
+		if err = ts.conn.(*tls.Conn).VerifyHostname(addr[:strings.LastIndex(addr, ":")]); err != nil {
+			ts.error("could not verify host", err)
+			return
+		}
 	}
 
 	// Set timeout to detect dead connection. Twitter sends at least one line
@@ -156,8 +171,9 @@ func (ts *TwitterStream) connect() {
 	log.Println("twitterstream: connected to", ts.url)
 }
 
-// Next returns the next entity from the stream. 
-func (ts *TwitterStream) Next(v interface{}) os.Error {
+// Next returns the next line from the stream. The returned slice is
+// overwritten by the next call to Next.
+func (ts *TwitterStream) Next() []byte {
 	var p []byte
 	for {
 		for ts.r == nil {
@@ -180,5 +196,5 @@ func (ts *TwitterStream) Next(v interface{}) os.Error {
 			break
 		}
 	}
-	return json.Unmarshal(p, v)
+	return p
 }
