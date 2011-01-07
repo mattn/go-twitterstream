@@ -24,6 +24,7 @@ import (
 	"github.com/garyburd/twister/oauth"
 	"github.com/garyburd/twister/web"
 	"http"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -187,10 +188,28 @@ func (ts *TwitterStream) Next() []byte {
 		var err os.Error
 		p, err = ts.r.ReadSlice('\n')
 		if err != nil {
-			ts.error("error reading line", err)
+			ts.error("error reading chunk-size", err)
 			continue
 		} else if len(p) <= 2 {
 			// ignore keepalive line
+		}
+		size, err := strconv.Btoui64("0x"+strings.Trim(string(p), "\r\n"), 0)
+		if err != nil {
+			ts.error("error invalid chunk-size", err)
+			continue
+		}
+		if size == 0 {
+			ts.Close()
+			continue
+		}
+		p = make([]byte, size)
+		if _, err = io.ReadFull(ts.r, p); err != nil {
+			ts.error("error reading chunk-data", err)
+			continue
+		}
+		_, err = ts.r.ReadSlice('\n')
+		if err != nil {
+			ts.error("error reading chunk-data", err)
 			continue
 		} else {
 			break
