@@ -37,13 +37,15 @@ import (
 // TwitterStream manages the connection to Twitter. The stream automatically
 // reconnects to Twitter if there is an error with the connection.
 type TwitterStream struct {
-	waitUntil   int64
-	conn        net.Conn
-	r           *bufio.Reader
-	url         string
-	param       web.StringsMap
-	oauthClient *oauth.Client
-	accessToken *oauth.Credentials
+	waitUntil      int64
+	chunkRemaining int64
+	chunkState     int
+	conn           net.Conn
+	r              *bufio.Reader
+	url            string
+	param          web.StringsMap
+	oauthClient    *oauth.Client
+	accessToken    *oauth.Credentials
 }
 
 // New returns a new TwitterStream. 
@@ -61,6 +63,12 @@ func (ts *TwitterStream) Close() {
 }
 
 var responseLineRegexp = regexp.MustCompile("^HTTP/[0-9.]+ ([0-9]+) ")
+
+const (
+	stateStart = iota
+	stateEnd
+	stateNormal
+)
 
 func (ts *TwitterStream) error(msg string, err os.Error) {
 	log.Println("twitterstream:", msg, err)
@@ -95,7 +103,6 @@ func (ts *TwitterStream) connect() {
 
 	header := web.NewStringsMap(
 		web.HeaderHost, url.Host,
-		web.HeaderConnection, "close", // disable chunk encoding in response
 		web.HeaderContentLength, strconv.Itoa(len(body)),
 		web.HeaderContentType, "application/x-www-form-urlencoded")
 
@@ -168,33 +175,58 @@ func (ts *TwitterStream) connect() {
 		return
 	}
 
+	ts.chunkState = stateStart
+
 	log.Println("twitterstream: connected to", ts.url)
 }
 
 // Next returns the next line from the stream. The returned slice is
 // overwritten by the next call to Next.
 func (ts *TwitterStream) Next() []byte {
-	var p []byte
 	for {
-		for ts.r == nil {
+		if ts.r == nil {
 			d := ts.waitUntil - time.Nanoseconds()
 			if d > 0 {
 				time.Sleep(d)
 			}
 			ts.waitUntil = time.Nanoseconds() + 30e9
 			ts.connect()
+			continue
 		}
-		var err os.Error
-		p, err = ts.r.ReadSlice('\n')
+
+		p, err := ts.r.ReadSlice('\n')
 		if err != nil {
 			ts.error("error reading line", err)
 			continue
-		} else if len(p) <= 2 {
-			// ignore keepalive line
-			continue
-		} else {
-			break
 		}
+
+		switch ts.chunkState {
+		case stateStart:
+			ts.chunkRemaining, err = strconv.Btoi64(string(p[:len(p)-2]), 16)
+			switch {
+			case err != nil:
+				ts.error("error parsing chunk size", err)
+			case ts.chunkRemaining == 0:
+				ts.error("end of chunked stream", nil)
+			}
+			ts.chunkState = stateNormal
+			continue
+		case stateEnd:
+			ts.chunkState = stateStart
+			continue
+		case stateNormal:
+			ts.chunkRemaining = ts.chunkRemaining - int64(len(p))
+			if ts.chunkRemaining == 0 {
+				ts.chunkState = stateEnd
+			}
+		}
+
+		if len(p) <= 2 {
+			continue // ignore keepalive line
+		}
+
+		return p
 	}
-	return p
+	panic("should not get here")
+	return nil
 }
