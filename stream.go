@@ -107,14 +107,31 @@ func (ts *TwitterStream) connect() {
 	header.WriteHttpHeader(&request)
 	request.Write(body)
 
+	proxyURL, _ := http.ParseURL(os.Getenv("HTTP_PROXY"))
+
 	if url.Scheme == "http" {
-		ts.conn, err = net.Dial("tcp", "", addr)
+		if proxyURL != nil {
+			ts.conn, err = net.Dial("tcp", "", proxyURL.Host)
+		} else {
+			ts.conn, err = net.Dial("tcp", "", addr)
+		}
 		if err != nil {
 			ts.error("dial failed ", err)
 			return
 		}
 	} else {
-		ts.conn, err = tls.Dial("tcp", "", addr, nil)
+		if proxyURL != nil {
+			var proxyConn net.Conn
+			proxyConn, err = net.Dial("tcp", "", proxyURL.Host)
+			if err == nil {
+				ts.conn = tls.Client(proxyConn, nil)
+				proxyConn.Write([]byte("CONNECT " + addr + " HTTP/1.1\r\n\r\n"))
+				b := make([]byte, 1024)
+				proxyConn.Read(b)
+			}
+		} else {
+			ts.conn, err = tls.Dial("tcp", "", addr, nil)
+		}
 		if err != nil {
 			ts.error("dial failed ", err)
 			return
