@@ -43,13 +43,13 @@ type TwitterStream struct {
 	conn           net.Conn
 	r              *bufio.Reader
 	url            string
-	param          web.StringsMap
+	param          web.ParamMap
 	oauthClient    *oauth.Client
 	accessToken    *oauth.Credentials
 }
 
 // New returns a new TwitterStream. 
-func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, url string, param web.StringsMap) *TwitterStream {
+func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, url string, param web.ParamMap) *TwitterStream {
 	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, url: url, param: param}
 }
 
@@ -93,7 +93,7 @@ func (ts *TwitterStream) connect() {
 		}
 	}
 
-	param := web.StringsMap{}
+	param := web.ParamMap{}
 	for key, values := range ts.param {
 		param[key] = values
 	}
@@ -101,7 +101,7 @@ func (ts *TwitterStream) connect() {
 
 	body := param.FormEncodedBytes()
 
-	header := web.NewStringsMap(
+	header := web.NewHeaderMap(
 		web.HeaderHost, url.Host,
 		web.HeaderContentLength, strconv.Itoa(len(body)),
 		web.HeaderContentType, "application/x-www-form-urlencoded")
