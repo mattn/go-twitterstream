@@ -114,13 +114,13 @@ func (ts *TwitterStream) connect() {
 	request.Write(body)
 
 	if url.Scheme == "http" {
-		ts.conn, err = net.Dial("tcp", "", addr)
+		ts.conn, err = net.Dial("tcp", addr)
 		if err != nil {
 			ts.error("dial failed ", err)
 			return
 		}
 	} else {
-		ts.conn, err = tls.Dial("tcp", "", addr, nil)
+		ts.conn, err = tls.Dial("tcp", addr, nil)
 		if err != nil {
 			ts.error("dial failed ", err)
 			return
