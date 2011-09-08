@@ -23,7 +23,7 @@ import (
 	"crypto/tls"
 	"github.com/garyburd/twister/oauth"
 	"github.com/garyburd/twister/web"
-	"http"
+
 	"io/ioutil"
 	"log"
 	"net"
@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"url"
 )
 
 // TwitterStream manages the connection to Twitter. The stream automatically
@@ -42,15 +43,15 @@ type TwitterStream struct {
 	chunkState     int
 	conn           net.Conn
 	r              *bufio.Reader
-	url            string
+	urlStr         string
 	param          web.Values
 	oauthClient    *oauth.Client
 	accessToken    *oauth.Credentials
 }
 
 // New returns a new TwitterStream. 
-func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, url string, param web.Values) *TwitterStream {
-	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, url: url, param: param}
+func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr string, param web.Values) *TwitterStream {
+	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, urlStr: urlStr, param: param}
 }
 
 // Close releases all resources used by the stream.
@@ -77,16 +78,16 @@ func (ts *TwitterStream) error(msg string, err os.Error) {
 
 func (ts *TwitterStream) connect() {
 	var err os.Error
-	log.Println("twitterstream: connecting to", ts.url)
+	log.Println("twitterstream: connecting to", ts.urlStr)
 
-	url, err := http.ParseURL(ts.url)
+	u, err := url.Parse(ts.urlStr)
 	if err != nil {
-		panic("bad url: " + ts.url)
+		panic("bad url: " + ts.urlStr)
 	}
 
-	addr := url.Host
+	addr := u.Host
 	if strings.LastIndex(addr, ":") <= strings.LastIndex(addr, "]") {
-		if url.Scheme == "http" {
+		if u.Scheme == "http" {
 			addr = addr + ":80"
 		} else {
 			addr = addr + ":443"
@@ -97,23 +98,23 @@ func (ts *TwitterStream) connect() {
 	for key, values := range ts.param {
 		param[key] = values
 	}
-	ts.oauthClient.SignParam(ts.accessToken, "POST", ts.url, param)
+	ts.oauthClient.SignParam(ts.accessToken, "POST", ts.urlStr, param)
 
 	body := param.FormEncodedBytes()
 
 	header := web.NewHeader(
-		web.HeaderHost, url.Host,
+		web.HeaderHost, u.Host,
 		web.HeaderContentLength, strconv.Itoa(len(body)),
 		web.HeaderContentType, "application/x-www-form-urlencoded")
 
 	var request bytes.Buffer
 	request.WriteString("POST ")
-	request.WriteString(url.RawPath)
+	request.WriteString(u.RawPath)
 	request.WriteString(" HTTP/1.1\r\n")
 	header.WriteHttpHeader(&request)
 	request.Write(body)
 
-	if url.Scheme == "http" {
+	if u.Scheme == "http" {
 		ts.conn, err = net.Dial("tcp", addr)
 		if err != nil {
 			ts.error("dial failed ", err)
@@ -177,7 +178,7 @@ func (ts *TwitterStream) connect() {
 
 	ts.chunkState = stateStart
 
-	log.Println("twitterstream: connected to", ts.url)
+	log.Println("twitterstream: connected to", ts.urlStr)
 }
 
 // Next returns the next line from the stream. The returned slice is
