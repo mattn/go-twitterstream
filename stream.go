@@ -27,7 +27,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -71,13 +70,13 @@ const (
 	stateNormal
 )
 
-func (ts *TwitterStream) error(msg string, err os.Error) {
+func (ts *TwitterStream) error(msg string, err error) {
 	log.Println("twitterstream:", msg, err)
 	ts.Close()
 }
 
 func (ts *TwitterStream) connect() {
-	var err os.Error
+	var err error
 	log.Println("twitterstream: connecting to", ts.urlStr)
 
 	u, err := url.Parse(ts.urlStr)
