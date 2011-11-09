@@ -27,11 +27,11 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"url"
 )
 
 // TwitterStream manages the connection to Twitter. The stream automatically
