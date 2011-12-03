@@ -12,9 +12,9 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-// The twitterstream package implements the basic functionality for accessing
-// the Twitter streaming APIs.  See http://dev.twitter.com/pages/streaming_api
-// for information on the Twitter streaming APIs.
+// Package twitterstream implements the basic functionality for accessing the
+// Twitter streaming APIs. See http://dev.twitter.com/pages/streaming_api for
+// information on the Twitter streaming APIs.
 package twitterstream
 
 import (
@@ -37,7 +37,7 @@ import (
 // TwitterStream manages the connection to Twitter. The stream automatically
 // reconnects to Twitter if there is an error with the connection.
 type TwitterStream struct {
-	waitUntil      int64
+	waitUntil      time.Time
 	chunkRemaining int64
 	chunkState     int
 	conn           net.Conn
@@ -185,11 +185,11 @@ func (ts *TwitterStream) connect() {
 func (ts *TwitterStream) Next() []byte {
 	for {
 		if ts.r == nil {
-			d := ts.waitUntil - time.Nanoseconds()
+			d := ts.waitUntil.Sub(time.Now())
 			if d > 0 {
 				time.Sleep(d)
 			}
-			ts.waitUntil = time.Nanoseconds() + 30e9
+			ts.waitUntil = time.Now().Add(30 * time.Second)
 			ts.connect()
 			continue
 		}
