@@ -202,7 +202,7 @@ func (ts *TwitterStream) Next() []byte {
 
 		switch ts.chunkState {
 		case stateStart:
-			ts.chunkRemaining, err = strconv.Btoi64(string(p[:len(p)-2]), 16)
+			ts.chunkRemaining, err = strconv.ParseInt(string(p[:len(p)-2]), 16, 64)
 			switch {
 			case err != nil:
 				ts.error("error parsing chunk size", err)
