@@ -21,9 +21,8 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
-	"github.com/garyburd/twister/oauth"
+	"github.com/garyburd/go-oauth"
 	"github.com/garyburd/twister/web"
-
 	"io/ioutil"
 	"log"
 	"net"
@@ -43,14 +42,14 @@ type TwitterStream struct {
 	conn           net.Conn
 	r              *bufio.Reader
 	urlStr         string
-	param          web.Values
+	params         url.Values
 	oauthClient    *oauth.Client
 	accessToken    *oauth.Credentials
 }
 
 // New returns a new TwitterStream. 
-func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr string, param web.Values) *TwitterStream {
-	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, urlStr: urlStr, param: param}
+func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr string, params url.Values) *TwitterStream {
+	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, urlStr: urlStr, params: params}
 }
 
 // Close releases all resources used by the stream.
@@ -93,13 +92,13 @@ func (ts *TwitterStream) connect() {
 		}
 	}
 
-	param := web.Values{}
-	for key, values := range ts.param {
-		param[key] = values
+	params := url.Values{}
+	for key, values := range ts.params {
+		params[key] = values
 	}
-	ts.oauthClient.SignParam(ts.accessToken, "POST", ts.urlStr, param)
+	ts.oauthClient.SignParam(ts.accessToken, "POST", ts.urlStr, params)
 
-	body := param.FormEncodedBytes()
+	body := params.Encode()
 
 	header := web.NewHeader(
 		web.HeaderHost, u.Host,
@@ -111,7 +110,7 @@ func (ts *TwitterStream) connect() {
 	request.WriteString(u.RawPath)
 	request.WriteString(" HTTP/1.1\r\n")
 	header.WriteHttpHeader(&request)
-	request.Write(body)
+	request.WriteString(body)
 
 	if u.Scheme == "http" {
 		ts.conn, err = net.Dial("tcp", addr)
