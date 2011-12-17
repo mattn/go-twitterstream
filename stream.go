@@ -132,7 +132,7 @@ func (ts *TwitterStream) connect() {
 
 	// Set timeout to detect dead connection. Twitter sends at least one line
 	// to the response every 30 seconds.
-	err = ts.conn.SetReadTimeout(60e9)
+	err = ts.conn.SetReadTimeout(int64(60 * time.Second))
 	if err != nil {
 		ts.error("set read timeout failed", err)
 		return
