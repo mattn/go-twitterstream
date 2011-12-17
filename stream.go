@@ -70,7 +70,7 @@ const (
 )
 
 func (ts *TwitterStream) error(msg string, err error) {
-	log.Println("twitterstream:", msg, err)
+	log.Println("twitterstream:", msg+":", err)
 	ts.Close()
 }
 
