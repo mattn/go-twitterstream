@@ -15,16 +15,48 @@
 // Package twitterstream implements the basic functionality for accessing the
 // Twitter streaming APIs. See http://dev.twitter.com/pages/streaming_api for
 // information on the Twitter streaming APIs.
+//
+// The following example shows how to handle dropped connections. If it's
+// important for the application to see every tweet in the stream, then the
+// application should backfill the stream using the Twitter search API after
+// each connection attempt.
+//
+//  waitUntil := time.Now()
+//  for {
+//      // Rate limit connection attempts to once every 30 seconds.
+//      if d := waitUntil.Sub(time.Now()); d > 0 {
+//          time.Sleep(d)
+//      }
+//      waitUntil = time.Now().Add(30 * time.Second)
+//
+//      ts, err := twitterstream.Open(client, cred, url, params)
+//      if err != nil {
+//          log.Println("error opening stream: ", err)
+//          continue
+//      }
+//
+//      // Loop until stream has a permanent error.
+//      for ts.Err() == nil {
+//          var t MyTweet
+//          if err := ts.UnmarshalNext(&t); err != nil {
+//              log.Println("error reading tweet: ", err)
+//              continue
+//          } 
+//          process(&t) 
+//      }
+//      ts.Close()
+//  }
+//          
 package twitterstream
 
 import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"github.com/garyburd/go-oauth"
-	"github.com/garyburd/twister/web"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/url"
 	"regexp"
@@ -33,54 +65,38 @@ import (
 	"time"
 )
 
-// TwitterStream manages the connection to Twitter. The stream automatically
-// reconnects to Twitter if there is an error with the connection.
-type TwitterStream struct {
-	waitUntil      time.Time
+// Stream manages the connection to a Twitter streaming endpoint.
+type Stream struct {
 	chunkRemaining int64
 	chunkState     int
 	conn           net.Conn
 	r              *bufio.Reader
-	urlStr         string
-	params         url.Values
-	oauthClient    *oauth.Client
-	accessToken    *oauth.Credentials
+	err            error
 }
 
-// New returns a new TwitterStream. 
-func New(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr string, params url.Values) *TwitterStream {
-	return &TwitterStream{oauthClient: oauthClient, accessToken: accessToken, urlStr: urlStr, params: params}
+// HTTPStatusError represents an HTTP error return from the Twitter streaming
+// API endpoint.
+type HTTPStatusError struct {
+	// HTTP status code.
+	StatusCode int
+
+	// Response body.
+	Message string
 }
 
-// Close releases all resources used by the stream.
-func (ts *TwitterStream) Close() {
-	if ts.conn != nil {
-		ts.conn.Close()
-		ts.conn = nil
-	}
-	ts.r = nil
+func (err HTTPStatusError) Error() string {
+	return "twitterstream: status=" + strconv.Itoa(err.StatusCode) + " " + err.Message
 }
 
 var responseLineRegexp = regexp.MustCompile("^HTTP/[0-9.]+ ([0-9]+) ")
 
-const (
-	stateStart = iota
-	stateEnd
-	stateNormal
-)
+// Open opens a new stream.
+func Open(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr string, params url.Values) (*Stream, error) {
+	ts := new(Stream)
 
-func (ts *TwitterStream) error(msg string, err error) {
-	log.Println("twitterstream:", msg+":", err)
-	ts.Close()
-}
-
-func (ts *TwitterStream) connect() {
-	var err error
-	log.Println("twitterstream: connecting to", ts.urlStr)
-
-	u, err := url.Parse(ts.urlStr)
+	u, err := url.Parse(urlStr)
 	if err != nil {
-		panic("bad url: " + ts.urlStr)
+		return nil, err
 	}
 
 	addr := u.Host
@@ -92,41 +108,18 @@ func (ts *TwitterStream) connect() {
 		}
 	}
 
-	params := url.Values{}
-	for key, values := range ts.params {
-		params[key] = values
-	}
-	ts.oauthClient.SignParam(ts.accessToken, "POST", ts.urlStr, params)
-
-	body := params.Encode()
-
-	header := web.NewHeader(
-		web.HeaderHost, u.Host,
-		web.HeaderContentLength, strconv.Itoa(len(body)),
-		web.HeaderContentType, "application/x-www-form-urlencoded")
-
-	var request bytes.Buffer
-	request.WriteString("POST ")
-	request.WriteString(u.RawPath)
-	request.WriteString(" HTTP/1.1\r\n")
-	header.WriteHttpHeader(&request)
-	request.WriteString(body)
-
 	if u.Scheme == "http" {
 		ts.conn, err = net.Dial("tcp", addr)
 		if err != nil {
-			ts.error("dial failed ", err)
-			return
+			return nil, err
 		}
 	} else {
 		ts.conn, err = tls.Dial("tcp", addr, nil)
 		if err != nil {
-			ts.error("dial failed ", err)
-			return
+			return nil, err
 		}
 		if err = ts.conn.(*tls.Conn).VerifyHostname(addr[:strings.LastIndex(addr, ":")]); err != nil {
-			ts.error("could not verify host", err)
-			return
+			return nil, ts.fatal(err)
 		}
 	}
 
@@ -134,69 +127,104 @@ func (ts *TwitterStream) connect() {
 	// to the response every 30 seconds.
 	err = ts.conn.SetReadTimeout(int64(60 * time.Second))
 	if err != nil {
-		ts.error("set read timeout failed", err)
-		return
+		return nil, ts.fatal(err)
 	}
 
-	if _, err := ts.conn.Write(request.Bytes()); err != nil {
-		ts.error("error writing request: ", err)
-		return
+	// Setup request body.
+	pcopy := url.Values{}
+	for key, values := range params {
+		pcopy[key] = values
+	}
+	oauthClient.SignParam(accessToken, "POST", urlStr, pcopy)
+	body := pcopy.Encode()
+
+	var req bytes.Buffer
+	req.WriteString("POST ")
+	req.WriteString(u.RawPath)
+	req.WriteString(" HTTP/1.1")
+	req.WriteString("\r\nHost: ")
+	req.WriteString(u.Host)
+	req.WriteString("\r\nContent-Type: application/x-www-form-urlencoded")
+	req.WriteString("\r\nContent-Length: ")
+	req.WriteString(strconv.Itoa(len(body)))
+	req.WriteString("\r\n\r\n")
+	req.WriteString(body)
+	_, err = ts.conn.Write(req.Bytes())
+	if err != nil {
+		return nil, ts.fatal(err)
 	}
 
 	ts.r, _ = bufio.NewReaderSize(ts.conn, 8192)
 	p, err := ts.r.ReadSlice('\n')
 	if err != nil {
-		ts.error("error reading response: ", err)
-		return
+		return nil, ts.fatal(err)
 	}
 
 	m := responseLineRegexp.FindSubmatch(p)
 	if m == nil {
-		ts.error("bad response line", nil)
-		return
+		return nil, ts.fatal(errors.New("twitterstream: bad http response line"))
 	}
 
+	// Skip headers
 	for {
 		p, err = ts.r.ReadSlice('\n')
 		if err != nil {
-			ts.error("error reading header: ", err)
-			return
+			return nil, ts.fatal(err)
 		}
 		if len(p) <= 2 {
 			break
 		}
 	}
 
-	if string(m[1]) != "200" {
+	statusCode, _ := strconv.Atoi(string(m[1]))
+	if statusCode != 200 {
 		p, _ := ioutil.ReadAll(ts.r)
-		log.Println(string(p))
-		ts.error("bad response code: "+string(m[1]), nil)
-		return
+		return nil, HTTPStatusError{statusCode, string(p)}
 	}
 
 	ts.chunkState = stateStart
-
-	log.Println("twitterstream: connected to", ts.urlStr)
+	return ts, nil
 }
+
+func (ts *Stream) fatal(err error) error {
+	if ts.conn != nil {
+		ts.conn.Close()
+	}
+	if ts.err == nil {
+		ts.err = err
+	}
+	return err
+}
+
+// Close releases the resources used by the stream.
+func (ts *Stream) Close() error {
+	if ts.err != nil {
+		return ts.err
+	}
+	return ts.conn.Close()
+}
+
+// Err returns a non-nil value if the stream has a permanent error.
+func (ts *Stream) Err() error {
+	return ts.err
+}
+
+const (
+	stateStart = iota
+	stateEnd
+	stateNormal
+)
 
 // Next returns the next line from the stream. The returned slice is
 // overwritten by the next call to Next.
-func (ts *TwitterStream) Next() []byte {
+func (ts *Stream) Next() ([]byte, error) {
+	if ts.err != nil {
+		return nil, ts.err
+	}
 	for {
-		if ts.r == nil {
-			d := ts.waitUntil.Sub(time.Now())
-			if d > 0 {
-				time.Sleep(d)
-			}
-			ts.waitUntil = time.Now().Add(30 * time.Second)
-			ts.connect()
-			continue
-		}
-
 		p, err := ts.r.ReadSlice('\n')
 		if err != nil {
-			ts.error("error reading line", err)
-			continue
+			return nil, ts.fatal(err)
 		}
 
 		switch ts.chunkState {
@@ -204,9 +232,9 @@ func (ts *TwitterStream) Next() []byte {
 			ts.chunkRemaining, err = strconv.ParseInt(string(p[:len(p)-2]), 16, 64)
 			switch {
 			case err != nil:
-				ts.error("error parsing chunk size", err)
+				return nil, ts.fatal(errors.New("error parsing chunk size"))
 			case ts.chunkRemaining == 0:
-				ts.error("end of chunked stream", nil)
+				return nil, ts.fatal(errors.New("end of chunked stream"))
 			}
 			ts.chunkState = stateNormal
 			continue
@@ -224,8 +252,18 @@ func (ts *TwitterStream) Next() []byte {
 			continue // ignore keepalive line
 		}
 
-		return p
+		return p, nil
 	}
 	panic("should not get here")
-	return nil
+}
+
+// UnmarshalNext reads the next line of from the stream and decodes the line as
+// JSON to data. This is a convenience function for streams with homogeneous
+// entity types. 
+func (ts *Stream) UnmarshalNext(data interface{}) error {
+	p, err := ts.Next()
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(p, data)
 }
