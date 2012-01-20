@@ -123,13 +123,6 @@ func Open(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr stri
 		}
 	}
 
-	// Set timeout to detect dead connection. Twitter sends at least one line
-	// to the response every 30 seconds.
-	err = ts.conn.SetReadTimeout(int64(60 * time.Second))
-	if err != nil {
-		return nil, ts.fatal(err)
-	}
-
 	// Setup request body.
 	pcopy := url.Values{}
 	for key, values := range params {
@@ -140,7 +133,7 @@ func Open(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr stri
 
 	var req bytes.Buffer
 	req.WriteString("POST ")
-	req.WriteString(u.RawPath)
+	req.WriteString(u.RequestURI())
 	req.WriteString(" HTTP/1.1")
 	req.WriteString("\r\nHost: ")
 	req.WriteString(u.Host)
@@ -150,6 +143,12 @@ func Open(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr stri
 	req.WriteString("\r\n\r\n")
 	req.WriteString(body)
 	_, err = ts.conn.Write(req.Bytes())
+	if err != nil {
+		return nil, ts.fatal(err)
+	}
+
+	// Must connect in 60 seconds.
+	err = ts.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	if err != nil {
 		return nil, ts.fatal(err)
 	}
@@ -222,6 +221,12 @@ func (ts *Stream) Next() ([]byte, error) {
 		return nil, ts.err
 	}
 	for {
+		// Twitter sends at least one ine of text every 30 seconds.
+		err := ts.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		if err != nil {
+			return nil, ts.fatal(err)
+		}
+
 		p, err := ts.r.ReadSlice('\n')
 		if err != nil {
 			return nil, ts.fatal(err)
