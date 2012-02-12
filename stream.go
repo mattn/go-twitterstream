@@ -153,7 +153,7 @@ func Open(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr stri
 		return nil, ts.fatal(err)
 	}
 
-	ts.r, _ = bufio.NewReaderSize(ts.conn, 8192)
+	ts.r = bufio.NewReaderSize(ts.conn, 8192)
 	p, err := ts.r.ReadSlice('\n')
 	if err != nil {
 		return nil, ts.fatal(err)
