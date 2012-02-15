@@ -58,7 +58,9 @@ import (
 	"github.com/garyburd/go-oauth"
 	"io/ioutil"
 	"net"
+	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -108,13 +110,43 @@ func Open(oauthClient *oauth.Client, accessToken *oauth.Credentials, urlStr stri
 		}
 	}
 
+	proxyURL, _ := url.Parse(os.Getenv("HTTP_PROXY"))
+
 	if u.Scheme == "http" {
-		ts.conn, err = net.Dial("tcp", addr)
+		if proxyURL != nil {
+			ts.conn, err = net.Dial("tcp", proxyURL.Host)
+		} else {
+			ts.conn, err = net.Dial("tcp", addr)
+		}
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		ts.conn, err = tls.Dial("tcp", addr, nil)
+		if proxyURL != nil {
+			var proxy net.Conn
+			proxy, err = net.Dial("tcp", proxyURL.Host)
+			if err != nil {
+				return nil, err
+			}
+			req := &http.Request{
+				Method: "CONNECT",
+				URL:    &url.URL{Path: addr},
+				Host:   addr,
+				Header: make(http.Header),
+			}
+			req.Write(proxy)
+			res, err := http.ReadResponse(bufio.NewReader(proxy), req)
+			if err != nil {
+				return nil, err
+			}
+			if res.StatusCode != 200 {
+				return nil, HTTPStatusError{res.StatusCode, res.Status}
+			}
+			ts.conn = tls.Client(proxy, nil)
+			ts.conn.(*tls.Conn).Handshake();
+		} else {
+			ts.conn, err = tls.Dial("tcp", addr, nil)
+		}
 		if err != nil {
 			return nil, err
 		}
